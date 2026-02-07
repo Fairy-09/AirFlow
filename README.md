@@ -1,8 +1,7 @@
-# 🔥 AirFlow: Multi-Scale Dual-Stream Dynamics Modeling for Multivariate Air Quality Prediction
+# 🔥 AirFlow: An adaptive Dual-Stream Fusion Framework for Multivariate Air Quality Forecasting
 
 # 🌟 Overview
-
-AirFlow is a dual-stream deep learning model for multivariate air quality forecasting. It combines a State Space Stream for capturing long-term dependencies with a Dynamics Stream for modeling short-term fluctuations, fused through cross-attention and learnable gating mechanisms.
+AirFlow is a dual-stream deep learning model for multivariate air quality forecasting. It combines a State Space Stream for capturing long-term dependencies and short-term fluctuations with a Dynamics Stream for modeling underlying evolution velocity, fused through gated cross-attention mechanisms.
 
 # 📁 Project Structure
 
@@ -41,10 +40,15 @@ Download from: **https://quotsoft.net/air/**
 
 ### Baselines
 
-- **RNN-based**: BiLSTM, ConvLSTM
-- **Transformer-based**: Transformer, iTransformer, PatchTST, Airformer
-- **GNN-based**: STAAGCN
-- **Continuous-time-based**: Mamba, LNN
+- BiLSTM
+- ConvLSTM
+- Transformer
+- PatchTST
+- Airformer
+- iTransformer
+- STAAGCN
+- LNN
+- Mamba
 
 ### Evaluation Metrics
 
@@ -105,9 +109,3 @@ Under Review
 # 🔐 License
 
 This source code is provided for **research and education purposes only**. Any commercial use requires formal permission from the authors.
-
-# 📩 Contact
-
-If you have any questions, please open an issue or contact:
-
-- Email: []
