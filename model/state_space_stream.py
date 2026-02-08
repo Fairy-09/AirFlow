@@ -38,12 +38,10 @@ class StateSpaceStream(nn.Module):
         super().__init__()
         self.config = config
         self.layers = nn.ModuleList([ResidualBlock(config) for _ in range(config.n_layers)])
-        self.norm_f = RMSNorm(config.d_model)
 
     def forward(self, x):
         for layer in self.layers:
             x = layer(x)
-        x = self.norm_f(x)
         return x
 
     def step(self, x, caches):
@@ -56,16 +54,13 @@ class ResidualBlock(nn.Module):
     def __init__(self, config: StateSpaceConfig):
         super().__init__()
         self.mixer = StateSpaceBlock(config)
-        self.norm = RMSNorm(config.d_model)
 
     def forward(self, x):
-        output = self.mixer(self.norm(x)) + x
-        return output
+        return self.mixer(x) + x
 
     def step(self, x, cache):
-        output, cache = self.mixer.step(self.norm(x), cache)
-        output = output + x
-        return output, cache
+        output, cache = self.mixer.step(x, cache)
+        return output + x, cache
 
 
 class StateSpaceBlock(nn.Module):
@@ -132,10 +127,7 @@ class StateSpaceBlock(nn.Module):
         z = F.silu(z)
         y2 = self.ssm(z)
 
-        output = y * z
-        output2 = y2 * x
-
-        output = output + output2
+        output = y * z + y2 * x
         output = self.out_proj(output)
 
         if squeeze_output:
@@ -166,20 +158,15 @@ class StateSpaceBlock(nn.Module):
     def selective_scan(self, x, delta, A, B, C, D):
         deltaA = torch.exp(delta.unsqueeze(-1) * A)
         deltaB = delta.unsqueeze(-1) * B.unsqueeze(2)
-
         BX = deltaB * (x.unsqueeze(-1))
-
         hs = pscan(deltaA, BX)
-
         y = (hs @ C.unsqueeze(-1)).squeeze(3)
         y = y + D * x
-
         return y
 
     def selective_scan_seq(self, x, delta, A, B, C, D):
         deltaA = torch.exp(delta.unsqueeze(-1) * A)
         deltaB = delta.unsqueeze(-1) * B.unsqueeze(2)
-
         BX = deltaB * (x.unsqueeze(-1))
 
         h = torch.zeros(x.size(0), self.config.d_inner, self.config.d_state, device=deltaA.device)
@@ -191,10 +178,8 @@ class StateSpaceBlock(nn.Module):
             hs.append(h)
 
         hs = torch.stack(hs, dim=1)
-
         y = (hs @ C.unsqueeze(-1)).squeeze(3)
         y = y + D * x
-
         return y
 
     def step(self, x, cache):
@@ -210,14 +195,10 @@ class StateSpaceBlock(nn.Module):
         y, h = self.ssm_step(x, h)
 
         z = F.silu(z)
-
-        output = y * z
-        output = self.out_proj(output)
+        output = self.out_proj(y * z)
 
         inputs = torch.cat([inputs[:, :, 1:], x_cache], dim=2)
-        cache = (h, inputs)
-
-        return output, cache
+        return output, (h, inputs)
 
     def ssm_step(self, x, h):
         A = -torch.exp(self.A_log.float())
@@ -234,26 +215,13 @@ class StateSpaceBlock(nn.Module):
 
         deltaA = torch.exp(delta.unsqueeze(-1) * A)
         deltaB = delta.unsqueeze(-1) * B.unsqueeze(1)
-
         BX = deltaB * (x.unsqueeze(-1))
 
         if h is None:
             h = torch.zeros(x.size(0), self.config.d_inner, self.config.d_state, device=deltaA.device)
 
         h = deltaA * h + BX
-
         y = (h @ C.unsqueeze(-1)).squeeze(2)
         y = y + D * x
 
         return y, h
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, d_model: int, eps: float = 1e-5):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(d_model))
-
-    def forward(self, x):
-        output = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
-        return output
