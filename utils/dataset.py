@@ -77,15 +77,9 @@ class AirQualityDataset(Dataset):
         if self.target_pollutant != 'aqi' and 'aqi' in available_columns and 'aqi' not in pollutant_features:
             pollutant_features.append('aqi')
 
-        weather_features = []
-        legacy_weather_cols = ['2m_temperature', 'boundary_layer_height', 'k_index',
-                               'relative_humidity+950', 'surface_pressure', 'total_precipitation',
-                               'u_component_of_wind+950', 'v_component_of_wind+950', 'wind_speed', 'wind_dir']
-        for col in legacy_weather_cols:
-            if col in available_columns:
-                weather_features.append(col)
+        # Removed weather_features logic here
 
-        self.feature_cols = base_features + pollutant_features + weather_features
+        self.feature_cols = base_features + pollutant_features
         self.continuous_cols = [col for col in self.feature_cols if col not in ['hour', 'weekday']]
 
         self.feature_scaler = None
