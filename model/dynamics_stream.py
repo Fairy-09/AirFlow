@@ -14,8 +14,7 @@ class DynamicsTimeStep(nn.Module):
         self.W_rec = nn.Linear(hidden_size, hidden_size, bias=False)
 
         self.tau = nn.Parameter(torch.empty(hidden_size).uniform_(0.5, 2.0))
-
-        # 自适应步长参数
+        
         self.dt_min = dt_min
         self.dt_max = dt_max
         self.tolerance = 1e-3
