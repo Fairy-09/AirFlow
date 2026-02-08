@@ -43,12 +43,13 @@ Download from: **https://quotsoft.net/air/**
 - BiLSTM
 - ConvLSTM
 - Transformer
+- LNN
 - PatchTST
 - Airformer
 - iTransformer
 - STAAGCN
-- LNN
 - Mamba
+- MGSFformer
 
 ### Evaluation Metrics
 
@@ -86,16 +87,16 @@ python train.py --target_pollutant pm25 --data_file beijing_air_quality.csv
 
 ```bash
 # Train PM2.5 prediction model
-python train.py --target_pollutant pm25 --epochs 60 --batch_size 128
+python train.py --target_pollutant pm25
 
 # Train PM10 prediction model with custom settings
-python train.py --target_pollutant pm10 --hidden 64 --layer 4
+python train.py --target_pollutant pm10
 
 # Train NO2 prediction model (uses MinMax normalization automatically)
-python train.py --target_pollutant no2 --lr 1e-4
+python train.py --target_pollutant no2
 
 # Train AQI prediction model
-python train.py --target_pollutant aqi --seq_len 24 --out_dim 12
+python train.py --target_pollutant aqi
 ```
 
 # 🌟 Citation
