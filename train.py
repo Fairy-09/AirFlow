@@ -1,4 +1,5 @@
 import warnings
+
 warnings.filterwarnings("ignore")
 
 import torch
@@ -16,10 +17,9 @@ from dataclasses import dataclass
 import pickle
 
 from model.state_space_stream import StateSpaceBlock
-from model.dynamics_stream import ImprovedDynamicsTimeStep
+from model.dynamics_stream import DynamicsTimeStep
 from utils.util import set_seed
 from utils.dataset import AirQualityDataset
-from utils.logger import create_logger
 
 
 class GateMixer(nn.Module):
@@ -39,17 +39,16 @@ class GateMixer(nn.Module):
 
 
 class StreamLayer(nn.Module):
-    def __init__(self, config, use_attention=True, dynamics_hidden_ratio=0.5):
+    def __init__(self, config, dynamics_hidden_ratio=0.5):
         super().__init__()
         self.config = config
         self.d_model = config.d_model
-        self.use_attention = use_attention
         self.dynamics_hidden = max(16, int(config.d_model * dynamics_hidden_ratio))
 
         self.state_space_branch = StateSpaceBlock(config)
         self.state_space_norm = nn.LayerNorm(config.d_model)
 
-        self.dynamics_branch = ImprovedDynamicsTimeStep(
+        self.dynamics_branch = DynamicsTimeStep(
             input_size=config.d_model,
             hidden_size=self.dynamics_hidden,
             dropout=0.1
@@ -57,21 +56,20 @@ class StreamLayer(nn.Module):
         self.dynamics_proj = nn.Linear(self.dynamics_hidden, config.d_model)
         self.dynamics_norm = nn.LayerNorm(config.d_model)
 
-        if use_attention:
-            self.state_to_dynamics_attn = nn.MultiheadAttention(
-                embed_dim=config.d_model,
-                num_heads=4,
-                dropout=0.1,
-                batch_first=True
-            )
-            self.dynamics_to_state_attn = nn.MultiheadAttention(
-                embed_dim=config.d_model,
-                num_heads=4,
-                dropout=0.1,
-                batch_first=True
-            )
-            self.attn_norm = nn.LayerNorm(config.d_model)
-            self.cross_fusion = GateMixer(config.d_model)
+        self.state_to_dynamics_attn = nn.MultiheadAttention(
+            embed_dim=config.d_model,
+            num_heads=4,
+            dropout=0.1,
+            batch_first=True
+        )
+        self.dynamics_to_state_attn = nn.MultiheadAttention(
+            embed_dim=config.d_model,
+            num_heads=4,
+            dropout=0.1,
+            batch_first=True
+        )
+        self.attn_norm = nn.LayerNorm(config.d_model)
+        self.cross_fusion = GateMixer(config.d_model)
 
         self.final_fusion = nn.Sequential(
             nn.Linear(config.d_model, config.d_model),
@@ -99,18 +97,15 @@ class StreamLayer(nn.Module):
         dynamics_out = self.dynamics_proj(dynamics_out)
         dynamics_out = self.dynamics_norm(dynamics_out)
 
-        if self.use_attention:
-            state_enhanced, _ = self.state_to_dynamics_attn(
-                state_out, dynamics_out, dynamics_out
-            )
-            dynamics_enhanced, _ = self.dynamics_to_state_attn(
-                dynamics_out, state_out, state_out
-            )
-            cross_fusion = self.cross_fusion(state_enhanced, dynamics_enhanced)
-            cross_fusion = self.attn_norm(cross_fusion)
-            fusion_input_final = cross_fusion
-        else:
-            fusion_input_final = 0.5 * state_out + 0.5 * dynamics_out
+        state_enhanced, _ = self.state_to_dynamics_attn(
+            state_out, dynamics_out, dynamics_out
+        )
+        dynamics_enhanced, _ = self.dynamics_to_state_attn(
+            dynamics_out, state_out, state_out
+        )
+        cross_fusion = self.cross_fusion(state_enhanced, dynamics_enhanced)
+        cross_fusion = self.attn_norm(cross_fusion)
+        fusion_input_final = cross_fusion
 
         output = self.final_fusion(fusion_input_final)
         output = self.output_norm(output)
@@ -120,11 +115,10 @@ class StreamLayer(nn.Module):
 
 
 class StreamBlock(nn.Module):
-    def __init__(self, config, use_attention=True, dynamics_hidden_ratio=0.5):
+    def __init__(self, config, dynamics_hidden_ratio=0.5):
         super().__init__()
         self.layer = StreamLayer(
             config,
-            use_attention=use_attention,
             dynamics_hidden_ratio=dynamics_hidden_ratio
         )
         self.norm = nn.LayerNorm(config.d_model)
@@ -133,9 +127,9 @@ class StreamBlock(nn.Module):
         return self.layer(self.norm(x))
 
 
-class DualStream(nn.Module):
+class AirFlow(nn.Module):
     def __init__(self, in_dim, out_dim, seq_len=24, hidden_dim=32,
-                 n_layers=3, dropout=0.2, use_attention=True,
+                 n_layers=3, dropout=0.2,
                  dynamics_hidden_ratio=0.5, use_revin=True,
                  target_feature_idx=0, is_no2_target=False):
         super().__init__()
@@ -180,7 +174,6 @@ class DualStream(nn.Module):
         self.layers = nn.ModuleList([
             StreamBlock(
                 config=config,
-                use_attention=use_attention,
                 dynamics_hidden_ratio=dynamics_hidden_ratio
             ) for _ in range(n_layers)
         ])
@@ -323,7 +316,6 @@ class EarlyStopping:
                 self.overfitting_counter = max(0, self.overfitting_counter - 1)
 
             if self.overfitting_counter >= 8:
-                print(f"Severe overfitting detected: val_loss/train_loss = {overfitting_ratio:.3f}")
                 if self.restore_best_weights and self.best_weights is not None:
                     model.load_state_dict(self.best_weights)
                 return True
@@ -386,7 +378,7 @@ class Augmentor:
         return x
 
 
-def calc_metrics(y_true, y_pred, target_pollutant='pm25'):
+def calc_metrics(y_true, y_pred):
     mask = ~(np.isnan(y_true) | np.isnan(y_pred))
     y_true = y_true[mask]
     y_pred = y_pred[mask]
@@ -408,8 +400,7 @@ def calc_metrics(y_true, y_pred, target_pollutant='pm25'):
     return mse, rmse, mae, mape, r2
 
 
-def validate(args, model, val_data, dataset, logger, epoch=None, phase="VALIDATION"):
-    logger.info(f"=============  {phase}  =============")
+def validate(args, model, val_data, dataset, epoch=None, phase="VALIDATION"):
     model.eval()
     total_loss = 0
     all_predictions = []
@@ -454,17 +445,10 @@ def validate(args, model, val_data, dataset, logger, epoch=None, phase="VALIDATI
 
     avg_loss = total_loss / num_batches
 
-    if epoch is not None:
-        logger.info(f"Epoch {epoch + 1} {phase} Results:")
-
-    unit = "" if args.target_pollutant == 'aqi' else " μg/m³"
-    logger.info("MSE: %.2f || RMSE: %.2f || MAE: %.2f || MAPE: %.2f%% || R2: %.6f%s" %
-                (MSE_orig, RMSE_orig, MAE_orig, MAPE_orig, R2_orig, unit))
-
     return avg_loss, (MSE_orig, RMSE_orig, MAE_orig, MAPE_orig, R2_orig), (predictions_orig, targets_orig)
 
 
-def train(args, model, logger):
+def train(args, model):
     dataset = AirQualityDataset(
         args.root, args.data_file,
         sequence_length=args.seq_len, target_steps=args.out_dim,
@@ -476,12 +460,7 @@ def train(args, model, logger):
     x_val, y_val = dataset.get_val_data()
 
     if x_train is None or y_train is None:
-        logger.error("No training data available")
         return
-
-    logger.info(f"Training data shape: {x_train.shape}, {y_train.shape}")
-    if x_val is not None and y_val is not None:
-        logger.info(f"Validation data shape: {x_val.shape}, {y_val.shape}")
 
     criterion = Loss()
     optimizer = torch.optim.AdamW(
@@ -507,17 +486,6 @@ def train(args, model, logger):
 
     norm_method = "MinMax" if args.target_pollutant == 'no2' else "RevIN"
 
-    logger.info("\n" + "=" * 60)
-    logger.info("Starting training: DualStream")
-    logger.info("=" * 60)
-    logger.info(f"Fusion: Gated")
-    logger.info(f"Normalization: {norm_method}")
-    logger.info(f"Layers: {args.layer}")
-    logger.info(f"Attention: True")
-    logger.info(f"Target: {args.target_pollutant.upper()}")
-    logger.info(f"Train samples: {len(x_train)}, Val samples: {len(x_val) if x_val is not None else 0}")
-    logger.info(f"Mixed precision: {use_amp}")
-
     train_losses = []
     val_losses = []
     learning_rates = []
@@ -527,9 +495,6 @@ def train(args, model, logger):
     start_time = time.time()
 
     for epoch in range(args.epochs):
-        logger.info(f"\n{'=' * 60}")
-        logger.info(f"Epoch [{epoch + 1}/{args.epochs}]")
-        logger.info(f"{'=' * 60}")
         model.train()
 
         batch_size = args.batch_size
@@ -584,7 +549,7 @@ def train(args, model, logger):
 
         if x_val is not None and y_val is not None:
             val_loss, metrics, (predictions, targets) = validate(
-                args, model, (x_val, y_val), dataset, logger, epoch, phase="VALIDATION")
+                args, model, (x_val, y_val), dataset, epoch, phase="VALIDATION")
             val_losses.append(val_loss)
 
             if best_metrics is None or metrics[0] < best_metrics[0]:
@@ -600,52 +565,27 @@ def train(args, model, logger):
                     'val_loss': val_loss,
                     'metrics': metrics
                 }, os.path.join('result', f'{args.wandb_name}_best_model.pth'))
-                logger.info(f"Saved best model (Epoch {epoch + 1})")
 
             if early_stopping(val_loss, avg_train_loss, model):
-                logger.info(f"Early stopping at Epoch {epoch + 1}")
                 break
 
-        logger.info(f'Epoch {epoch + 1}/{args.epochs} | '
-                    f'Train Loss: {avg_train_loss:.6f} | Val Loss: {val_loss:.6f}')
-
     total_time = time.time() - start_time
-    logger.info(f'\nTraining completed, total time: {datetime.timedelta(seconds=int(total_time))}')
-
-    if best_metrics:
-        logger.info("\n" + "=" * 60)
-        logger.info("Best validation metrics:")
-        logger.info("=" * 60)
-        unit = "" if args.target_pollutant == 'aqi' else " μg/m³"
-        logger.info("MSE: %.2f || RMSE: %.2f || MAE: %.2f || MAPE: %.2f%% || R²: %.6f%s" %
-                    (*best_metrics, unit))
 
     x_test, y_test = dataset.get_test_data()
     test_metrics = None
 
     if x_test is not None and y_test is not None:
-        logger.info("\n" + "=" * 60)
-        logger.info("Test evaluation")
-        logger.info("=" * 60)
-
         best_model_path = os.path.join('result', f'{args.wandb_name}_best_model.pth')
         if os.path.exists(best_model_path):
             checkpoint = torch.load(best_model_path)
             model.load_state_dict(checkpoint['model_state_dict'])
-            logger.info(f"Loaded best model (from Epoch {checkpoint['epoch'] + 1})")
 
         test_loss, test_metrics, (test_pred, test_true) = validate(
-            args, model, (x_test, y_test), dataset, logger, phase="TEST")
-
-        unit = "" if args.target_pollutant == 'aqi' else " μg/m³"
-        logger.info("\nFinal test results:")
-        logger.info("MSE: %.2f || RMSE: %.2f || MAE: %.2f || MAPE: %.2f%% || R²: %.6f%s" %
-                    (*test_metrics, unit))
+            args, model, (x_test, y_test), dataset, phase="TEST")
 
         os.makedirs('result/test', exist_ok=True)
         np.save(os.path.join('result/test', f'{args.wandb_name}_test_predictions.npy'), test_pred)
         np.save(os.path.join('result/test', f'{args.wandb_name}_test_targets.npy'), test_true)
-        logger.info("Test results saved to result/test/")
 
     history = {
         'train_losses': train_losses,
@@ -667,7 +607,6 @@ def train(args, model, logger):
 
     with open(os.path.join('result', f'{args.wandb_name}_training_history.pkl'), 'wb') as f:
         pickle.dump(history, f)
-    logger.info("Training history saved")
 
     return model, history
 
@@ -684,7 +623,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--root", default='data', type=str, help="Data root directory")
-    parser.add_argument("--data_file", default='beijing_2023_2024_withAQI.csv', type=str)
+    parser.add_argument("--data_file", default='default.csv', type=str)
     parser.add_argument('--in_dim', type=int, default=9, help='Input dimension')
     parser.add_argument('--out_dim', type=int, default=6, help='Output sequence length')
     parser.add_argument('--seq_len', type=int, default=12, help='Input sequence length')
@@ -696,12 +635,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    args.wandb_name = f"airflow_{args.target_pollutant}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
     args.cuda = args.use_cuda and torch.cuda.is_available()
 
-    os.makedirs('logs', exist_ok=True)
     os.makedirs('result', exist_ok=True)
-    logger = create_logger(output_dir='logs',
-                           name=f"dual_stream_{datetime.datetime.now().strftime('%d-%m-%H')}")
 
     set_seed(args.seed, args.cuda)
 
@@ -714,17 +652,13 @@ if __name__ == "__main__":
     target_feature_idx = temp_dataset.get_target_pollutant_index()
     is_no2_target = (args.target_pollutant.lower() == 'no2')
 
-    logger.info(f"Target '{args.target_pollutant}' at feature index: {target_feature_idx}")
-    logger.info(f"Normalization: {'MinMax' if is_no2_target else 'RevIN'}")
-
-    model = DualStream(
+    model = AirFlow(
         in_dim=args.in_dim,
         out_dim=args.out_dim,
         seq_len=args.seq_len,
         hidden_dim=args.hidden,
         n_layers=args.layer,
         dropout=args.dropout,
-        use_attention=True,
         dynamics_hidden_ratio=0.5,
         use_revin=args.use_revin,
         target_feature_idx=target_feature_idx,
@@ -733,14 +667,5 @@ if __name__ == "__main__":
 
     if args.cuda:
         model = model.cuda()
-        logger.info(f"GPU: {torch.cuda.get_device_name()}")
 
-    logger.info(f"Model: DualStream")
-    logger.info(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
-    logger.info(f"Architecture: Parallel State-Space + Dynamics + Gated Fusion + Cross Attention")
-
-    trained_model, history = train(args, model, logger)
-
-    logger.info("\n" + "=" * 60)
-    logger.info("All processes completed!")
-    logger.info("=" * 60)
+    trained_model, history = train(args, model)
