@@ -46,10 +46,11 @@ Download from: **https://quotsoft.net/air/**
 - LNN
 - PatchTST
 - Airformer
-- iTransformer
 - STAAGCN
 - Mamba
+- AirPyhNet
 - MGSFformer
+- Air-DualODE
 
 ### Evaluation Metrics
 
